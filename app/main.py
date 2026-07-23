@@ -1,12 +1,16 @@
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Depends
 from fastapi.responses import RedirectResponse
 from pydantic import BaseModel
+from sqlalchemy.orm import Session
 import secrets
 
-app = FastAPI(title="URL Shortener")
+from app.database import engine, get_db, Base
+from app.models import Link
 
-# Stockage temporaire en mémoire (Phase 2 : PostgreSQL)
-links: dict[str, dict] = {}
+# Crée les tables au démarrage si elles n'existent pas
+Base.metadata.create_all(bind=engine)
+
+app = FastAPI(title="URL Shortener")
 
 
 class LinkIn(BaseModel):
@@ -19,24 +23,27 @@ def health():
 
 
 @app.post("/shorten")
-def shorten(payload: LinkIn):
+def shorten(payload: LinkIn, db: Session = Depends(get_db)):
     code = secrets.token_urlsafe(4)[:6]
-    links[code] = {"url": payload.url, "clicks": 0}
+    link = Link(code=code, url=payload.url, clicks=0)
+    db.add(link)
+    db.commit()
     return {"code": code, "short_url": f"/{code}"}
 
 
 @app.get("/{code}")
-def redirect(code: str):
-    link = links.get(code)
+def redirect(code: str, db: Session = Depends(get_db)):
+    link = db.query(Link).filter(Link.code == code).first()
     if not link:
         raise HTTPException(status_code=404, detail="Lien introuvable")
-    link["clicks"] += 1
-    return RedirectResponse(url=link["url"])
+    link.clicks += 1
+    db.commit()
+    return RedirectResponse(url=link.url)
 
 
 @app.get("/stats/{code}")
-def stats(code: str):
-    link = links.get(code)
+def stats(code: str, db: Session = Depends(get_db)):
+    link = db.query(Link).filter(Link.code == code).first()
     if not link:
         raise HTTPException(status_code=404, detail="Lien introuvable")
-    return {"code": code, "url": link["url"], "clicks": link["clicks"]}
+    return {"code": link.code, "url": link.url, "clicks": link.clicks}
